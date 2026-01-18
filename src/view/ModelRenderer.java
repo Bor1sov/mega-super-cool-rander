@@ -741,13 +741,20 @@ public class ModelRenderer extends JPanel {
                 
                 Vertex v = vertices.get(idx);
                 
-                // Центрируем и масштабируем
-                double x = (v.getX() - centerX) * scale;
-                double y = (v.getY() - centerY) * scale;
+                // Применяем трансформации камеры
+                double[] transformed = transformVertexWithCamera(
+                    v.getX(), v.getY(), v.getZ(),
+                    centerX, centerY, centerZ
+                );
+                
+                double x = transformed[0] * scale;
+                double y = transformed[1] * scale;
+                double z = transformed[2];
 
-                double zOffset = (v.getZ() - centerZ) * scale * 0.3;
-                x += zOffset * 0.5;
-                y += zOffset * 0.5;
+                // Простая перспективная проекция
+                double perspective = cameraDistance / (cameraDistance + z);
+                x *= perspective;
+                y *= perspective;
 
                 // Переводим в координаты экрана
                 int screenX = (int) (width / 2 + x + offsetX);
@@ -788,11 +795,20 @@ public class ModelRenderer extends JPanel {
         g2d.setStroke(new BasicStroke(2.0f));
         int verticesDrawn = 0;
         for (Vertex vertex : vertices) {
-            double x = (vertex.getX() - centerX) * scale;
-            double y = (vertex.getY() - centerY) * scale;
-            double zOffset = (vertex.getZ() - centerZ) * scale * 0.3;
-            x += zOffset * 0.5;
-            y += zOffset * 0.5;
+            // Применяем трансформации камеры
+            double[] transformed = transformVertexWithCamera(
+                vertex.getX(), vertex.getY(), vertex.getZ(),
+                centerX, centerY, centerZ
+            );
+            
+            double x = transformed[0] * scale;
+            double y = transformed[1] * scale;
+            double z = transformed[2];
+
+            // Простая перспективная проекция
+            double perspective = cameraDistance / (cameraDistance + z);
+            x *= perspective;
+            y *= perspective;
 
             int screenX = (int) (width / 2 + x + offsetX);
             int screenY = (int) (height / 2 - y + offsetY);
@@ -809,6 +825,46 @@ public class ModelRenderer extends JPanel {
         if (verticesDrawn == 0 && !vertices.isEmpty()) {
             System.out.println("Warning: No vertices drawn. Total vertices: " + vertices.size());
         }
+    }
+    
+    /**
+     * Трансформирует вершину с учетом камеры (вращение и смещение камеры)
+     * Возвращает [x, y, z] в пространстве камеры
+     */
+    private double[] transformVertexWithCamera(double vx, double vy, double vz,
+                                               double centerX, double centerY, double centerZ) {
+        // Центрируем относительно центра модели
+        double x = vx - centerX;
+        double y = vy - centerY;
+        double z = vz - centerZ;
+        
+        // Применяем смещение камеры (cameraTarget - это то, на что смотрит камера)
+        // Вычисляем относительное смещение от центра модели
+        double dx = centerX - cameraTarget.x;
+        double dy = centerY - cameraTarget.y;
+        double dz = centerZ - cameraTarget.z;
+        
+        x -= dx;
+        y -= dy;
+        z -= dz;
+        
+        // Применяем вращение вокруг Y (yaw)
+        double cosY = Math.cos(-cameraRotationY);
+        double sinY = Math.sin(-cameraRotationY);
+        double x1 = x * cosY - z * sinY;
+        double z1 = x * sinY + z * cosY;
+        x = x1;
+        z = z1;
+        
+        // Применяем вращение вокруг X (pitch)
+        double cosX = Math.cos(-cameraRotationX);
+        double sinX = Math.sin(-cameraRotationX);
+        double y1 = y * cosX - z * sinX;
+        double z2 = y * sinX + z * cosX;
+        y = y1;
+        z = z2;
+        
+        return new double[]{x, y, z};
     }
 
     public void resetView() {
