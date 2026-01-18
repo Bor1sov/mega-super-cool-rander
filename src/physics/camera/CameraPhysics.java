@@ -107,9 +107,15 @@ public class CameraPhysics {
     }
     
     public Vector3f getPosition() { return position; }
+    public Vector3f getTarget() { return target; }
     public Vector3f getForward() { return forward; }
     public float getCurrentNear() { return currentNear; }
     public float getCurrentFar() { return currentFar; }
+    
+    public void setTarget(Vector3f newTarget) {
+        this.target = newTarget;
+        updateVectors();
+    }
     
     public void setConfig(PhysicsConfig config) {
         this.movementSpeed = config.cameraSpeed;

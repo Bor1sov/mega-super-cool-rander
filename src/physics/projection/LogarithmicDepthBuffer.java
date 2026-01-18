@@ -5,8 +5,10 @@ import math.Matrix4f;
 
 public class LogarithmicDepthBuffer {
     
-    public Matrix4f createMatrix(float fov, float aspect, float near, float far) {
-        float tanHalfFov = (float)Math.tan(fov * 0.5f);
+    public Matrix4f createMatrix(float fovDegrees, float aspect, float near, float far) {
+        // FOV передается в градусах, конвертируем в радианы
+        float fovRad = (float)Math.toRadians(fovDegrees);
+        float tanHalfFov = (float)Math.tan(fovRad * 0.5f);
         float f = 1.0f / tanHalfFov;
         
         Matrix4f mat = new Matrix4f();

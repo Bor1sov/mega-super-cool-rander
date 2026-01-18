@@ -1,0 +1,899 @@
+package view;
+
+import model.*;
+import model.Polygon;
+import physics.field.FieldPhysicsEngine;
+import physics.field.FieldPhysicsEngine.PhysicsUpdateResult;
+import physics.camera.CameraPhysics.CameraUpdate;
+import math.Vector3f;
+import math.Vector4f;
+import math.Matrix4f;
+import utils.PhysicsConfig;
+
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.util.List;
+import java.util.ArrayList;
+
+/**
+ * Компонент для визуализации 3D моделей с физическим движком
+ */
+public class ModelRenderer extends JPanel {
+    private Scene scene;
+    private double scale = 1.0;
+    private double offsetX = 0;
+    private double offsetY = 0;
+    
+    // Физический движок
+    private FieldPhysicsEngine physicsEngine;
+    private PhysicsConfig physicsConfig;
+    private PhysicsUpdateResult lastPhysicsUpdate;
+    private boolean physicsInitialized = false;
+    
+    // Управление камерой
+    private boolean[] keysPressed = new boolean[256];
+    private float cameraRotationX = 0;
+    private float cameraRotationY = 0;
+    private float cameraDistance = 10.0f;
+    private Vector3f cameraTarget = new Vector3f(0, 0, 0);
+    private Vector3f desiredCameraPos = new Vector3f(0, 0, 10);
+    
+    // Таймер для обновления физики
+    private Timer physicsTimer;
+    private long lastUpdateTime = System.currentTimeMillis();
+
+    public ModelRenderer(Scene scene) {
+        this.scene = scene;
+        setPreferredSize(new Dimension(800, 600));
+        setBackground(Color.WHITE);
+        
+        // Инициализация физического движка
+        physicsConfig = new PhysicsConfig();
+        physicsConfig.aspectRatio = 16.0f / 9.0f;
+        physicsConfig.fov = 60.0f;
+        physicsEngine = new FieldPhysicsEngine(physicsConfig);
+        
+        // Обновляем aspect ratio при изменении размера окна
+        addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent e) {
+                int width = getWidth();
+                int height = getHeight();
+                if (width > 0 && height > 0) {
+                    physicsConfig.aspectRatio = (float)width / (float)height;
+                    physicsEngine.setConfig(physicsConfig);
+                }
+            }
+        });
+        
+        // Инициализация управления
+        setupInputHandlers();
+        
+        // Запуск цикла обновления физики
+        physicsTimer = new Timer(16, e -> updatePhysics()); // ~60 FPS
+        physicsTimer.start();
+        
+        setFocusable(true);
+        requestFocusInWindow();
+    }
+    
+    private void setupInputHandlers() {
+        // Обработка клавиатуры
+        addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                keysPressed[e.getKeyCode()] = true;
+            }
+            
+            @Override
+            public void keyReleased(KeyEvent e) {
+                keysPressed[e.getKeyCode()] = false;
+            }
+        });
+        
+        // Обработка мыши для вращения камеры
+        addMouseWheelListener(e -> {
+            int rotation = e.getWheelRotation();
+            cameraDistance *= (rotation > 0) ? 1.1f : 0.9f;
+            if (cameraDistance < 1.0f) cameraDistance = 1.0f;
+            if (cameraDistance > 100.0f) cameraDistance = 100.0f;
+            updateDesiredCameraPosition();
+        });
+
+        MouseAdapter mouseAdapter = new MouseAdapter() {
+            private Point lastPoint;
+            private boolean isRotating = false;
+
+            @Override
+            public void mousePressed(MouseEvent e) {
+                if (e.getButton() == MouseEvent.BUTTON1) {
+                    lastPoint = e.getPoint();
+                    isRotating = true;
+                }
+            }
+
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                if (isRotating && lastPoint != null) {
+                    int dx = e.getX() - lastPoint.x;
+                    int dy = e.getY() - lastPoint.y;
+                    
+                    cameraRotationY += dx * 0.01f;
+                    cameraRotationX += dy * 0.01f;
+                    
+                    // Ограничиваем вертикальное вращение
+                    if (cameraRotationX > Math.PI / 2 - 0.1f) cameraRotationX = (float)(Math.PI / 2 - 0.1f);
+                    if (cameraRotationX < -Math.PI / 2 + 0.1f) cameraRotationX = (float)(-Math.PI / 2 + 0.1f);
+                    
+                    lastPoint = e.getPoint();
+                    updateDesiredCameraPosition();
+                }
+            }
+            
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                if (e.getButton() == MouseEvent.BUTTON1) {
+                    isRotating = false;
+                }
+            }
+        };
+
+        addMouseListener(mouseAdapter);
+        addMouseMotionListener(mouseAdapter);
+    }
+    
+    private void updateDesiredCameraPosition() {
+        // Вычисляем позицию камеры на основе расстояния и углов (сферические координаты)
+        float x = (float)(cameraDistance * Math.sin(cameraRotationY) * Math.cos(cameraRotationX));
+        float y = (float)(cameraDistance * Math.sin(cameraRotationX));
+        float z = (float)(cameraDistance * Math.cos(cameraRotationY) * Math.cos(cameraRotationX));
+        
+        desiredCameraPos = cameraTarget.add(new Vector3f(x, y, z));
+        
+        // Обновляем физический движок, если он инициализирован
+        if (physicsInitialized) {
+            // Обновляем target в физическом движке через камеру
+            // (это делается автоматически через update, но мы можем принудительно обновить)
+        }
+    }
+    
+    private void updatePhysics() {
+        if (!physicsInitialized) {
+            initializePhysics();
+            return;
+        }
+        
+        long currentTime = System.currentTimeMillis();
+        float deltaTime = (currentTime - lastUpdateTime) / 1000.0f;
+        lastUpdateTime = currentTime;
+        
+        if (deltaTime > 0.1f) deltaTime = 0.1f; // Ограничиваем максимальный шаг
+        
+        // Обработка клавиатуры для перемещения камеры
+        handleKeyboardInput(deltaTime);
+        
+        // Получаем позиции объектов для физики
+        List<Model> models = scene.getModels();
+        if (models.isEmpty()) {
+            repaint();
+            return;
+        }
+        
+        // Подготавливаем данные для физического движка
+        List<Vector3f> objectPositions = new ArrayList<>();
+        List<Float> objectRadii = new ArrayList<>();
+        
+        for (Model model : models) {
+            // Вычисляем центр модели
+            Vector3f center = calculateModelCenter(model);
+            objectPositions.add(center);
+            
+            // Вычисляем радиус ограничивающей сферы
+            float radius = calculateModelRadius(model, center);
+            objectRadii.add(radius);
+        }
+        
+        Vector3f[] positionsArray = objectPositions.toArray(new Vector3f[0]);
+        float[] radiiArray = new float[objectRadii.size()];
+        for (int i = 0; i < objectRadii.size(); i++) {
+            radiiArray[i] = objectRadii.get(i);
+        }
+        
+        // Обновляем целевой объект камеры (центр активной модели)
+        // Камера автоматически следует за активной моделью
+        Vector3f newTarget;
+        if (scene.hasActiveModel()) {
+            Model activeModel = scene.getActiveModel();
+            newTarget = calculateModelCenter(activeModel);
+        } else if (!models.isEmpty()) {
+            newTarget = calculateModelCenter(models.get(0));
+        } else {
+            newTarget = cameraTarget;
+        }
+        
+        // Плавно перемещаем камеру к новому целевому объекту, если он изменился
+        float targetDistance = newTarget.distance(cameraTarget);
+        if (targetDistance > 0.01f) {
+            // Плавное перемещение целевого объекта
+            float lerpFactor = Math.min(1.0f, deltaTime * 2.0f); // Скорость следования
+            cameraTarget = new Vector3f(
+                cameraTarget.x + (newTarget.x - cameraTarget.x) * lerpFactor,
+                cameraTarget.y + (newTarget.y - cameraTarget.y) * lerpFactor,
+                cameraTarget.z + (newTarget.z - cameraTarget.z) * lerpFactor
+            );
+            
+            // Обновляем target в физическом движке
+            physicsEngine.setCameraTarget(cameraTarget);
+            
+            // Обновляем желаемую позицию камеры относительно нового target
+            updateDesiredCameraPosition();
+        }
+        
+        // Обновляем физический движок
+        try {
+            lastPhysicsUpdate = physicsEngine.update(
+                deltaTime,
+                desiredCameraPos,
+                positionsArray,
+                radiiArray
+            );
+        } catch (Exception e) {
+            // Если произошла ошибка, используем fallback рендеринг
+            System.err.println("Physics update error: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        repaint();
+    }
+    
+    private void initializePhysics() {
+        List<Model> models = scene.getModels();
+        if (models.isEmpty()) {
+            return;
+        }
+        
+        // Вычисляем начальную позицию камеры и целевой объект
+        Vector3f initialTarget;
+        
+        if (scene.hasActiveModel()) {
+            initialTarget = calculateModelCenter(scene.getActiveModel());
+        } else {
+            initialTarget = calculateModelCenter(models.get(0));
+        }
+        
+        cameraTarget = initialTarget;
+        
+        // Вычисляем начальное расстояние до модели
+        float maxRadius = 0;
+        for (Model model : models) {
+            Vector3f center = calculateModelCenter(model);
+            float radius = calculateModelRadius(model, center);
+            maxRadius = Math.max(maxRadius, radius);
+        }
+        
+        // Устанавливаем расстояние камеры в зависимости от размера модели
+        cameraDistance = Math.max(maxRadius * 2.5f, 5.0f);
+        if (cameraDistance > 50.0f) cameraDistance = 50.0f;
+        
+        updateDesiredCameraPosition();
+        Vector3f initialPos = desiredCameraPos;
+        
+        // Инициализируем физический движок
+        physicsEngine.initialize(initialPos, initialTarget);
+        physicsInitialized = true;
+        
+        // Обновляем aspect ratio
+        int width = getWidth();
+        int height = getHeight();
+        if (width > 0 && height > 0) {
+            physicsConfig.aspectRatio = (float)width / (float)height;
+            physicsEngine.setConfig(physicsConfig);
+        }
+    }
+    
+    private void handleKeyboardInput(float deltaTime) {
+        float moveSpeed = 5.0f * deltaTime;
+        Vector3f move = new Vector3f(0, 0, 0);
+        
+        if (keysPressed[KeyEvent.VK_W]) {
+            move = move.add(new Vector3f(0, 0, -moveSpeed));
+        }
+        if (keysPressed[KeyEvent.VK_S]) {
+            move = move.add(new Vector3f(0, 0, moveSpeed));
+        }
+        if (keysPressed[KeyEvent.VK_A]) {
+            move = move.add(new Vector3f(-moveSpeed, 0, 0));
+        }
+        if (keysPressed[KeyEvent.VK_D]) {
+            move = move.add(new Vector3f(moveSpeed, 0, 0));
+        }
+        if (keysPressed[KeyEvent.VK_Q]) {
+            move = move.add(new Vector3f(0, moveSpeed, 0));
+        }
+        if (keysPressed[KeyEvent.VK_E]) {
+            move = move.add(new Vector3f(0, -moveSpeed, 0));
+        }
+        
+        if (move.length() > 0) {
+            // Применяем вращение к вектору движения
+            Vector3f rotatedMove = rotateVector(move, cameraRotationY, cameraRotationX);
+            desiredCameraPos = desiredCameraPos.add(rotatedMove);
+            cameraTarget = cameraTarget.add(rotatedMove);
+        }
+    }
+    
+    private Vector3f rotateVector(Vector3f v, float yaw, float pitch) {
+        // Вращение вокруг Y (yaw)
+        float cosY = (float)Math.cos(yaw);
+        float sinY = (float)Math.sin(yaw);
+        float x1 = v.x * cosY - v.z * sinY;
+        float z1 = v.x * sinY + v.z * cosY;
+        
+        // Вращение вокруг X (pitch)
+        float cosP = (float)Math.cos(pitch);
+        float sinP = (float)Math.sin(pitch);
+        float y1 = v.y * cosP - z1 * sinP;
+        float z2 = v.y * sinP + z1 * cosP;
+        
+        return new Vector3f(x1, y1, z2);
+    }
+    
+    private Vector3f calculateModelCenter(Model model) {
+        if (model.getVertexCount() == 0) {
+            return new Vector3f(0, 0, 0);
+        }
+        
+        double sumX = 0, sumY = 0, sumZ = 0;
+        for (Vertex v : model.getVertices()) {
+            sumX += v.getX();
+            sumY += v.getY();
+            sumZ += v.getZ();
+        }
+        
+        int count = model.getVertexCount();
+        return new Vector3f(
+            (float)(sumX / count),
+            (float)(sumY / count),
+            (float)(sumZ / count)
+        );
+    }
+    
+    private float calculateModelRadius(Model model, Vector3f center) {
+        float maxDist = 0;
+        for (Vertex v : model.getVertices()) {
+            Vector3f vertexPos = new Vector3f(
+                (float)v.getX(),
+                (float)v.getY(),
+                (float)v.getZ()
+            );
+            float dist = center.distance(vertexPos);
+            if (dist > maxDist) {
+                maxDist = dist;
+            }
+        }
+        return Math.max(maxDist, 1.0f); // Минимальный радиус 1.0
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2d = (Graphics2D) g;
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        int width = getWidth();
+        int height = getHeight();
+
+        // Очищаем фон
+        g2d.setColor(getBackground());
+        g2d.fillRect(0, 0, width, height);
+
+        List<Model> models = scene.getModels();
+        if (models.isEmpty()) {
+            // если нет моделей
+            g2d.setColor(Color.GRAY);
+            g2d.setFont(new Font("Arial", Font.PLAIN, 18));
+            String message = "No models loaded. Use File > Open Model to load a model.";
+            FontMetrics fm = g2d.getFontMetrics();
+            int x = (width - fm.stringWidth(message)) / 2;
+            int y = height / 2;
+            g2d.drawString(message, x, y);
+            return;
+        }
+        
+        // Обновляем aspect ratio
+        if (width > 0 && height > 0) {
+            physicsConfig.aspectRatio = (float)width / (float)height;
+        }
+
+        // По умолчанию используем простой рендеринг для надежности
+        // Физический рендеринг можно включить позже, когда он будет полностью протестирован
+        boolean usePhysicsRendering = false; // Временно отключено
+        
+        if (usePhysicsRendering) {
+            // Используем физический движок для рендеринга, если он инициализирован
+            // Если физика не готова, пытаемся инициализировать её
+            if (!physicsInitialized && !models.isEmpty()) {
+                initializePhysics();
+            }
+            
+            if (physicsInitialized && lastPhysicsUpdate != null) {
+                try {
+                    drawWithPhysics(g2d, width, height);
+                } catch (Exception e) {
+                    // Если ошибка при рендеринге с физикой, используем простой рендеринг
+                    System.err.println("Error in physics rendering: " + e.getMessage());
+                    e.printStackTrace();
+                    drawSimple(g2d, width, height);
+                }
+            } else {
+                // Fallback к простому рендерингу
+                drawSimple(g2d, width, height);
+            }
+        } else {
+            // Используем простой рендеринг
+            drawSimple(g2d, width, height);
+        }
+
+        // Информация о моделях и физике
+        drawInfo(g2d, width, height);
+    }
+    
+    private void drawWithPhysics(Graphics2D g2d, int width, int height) {
+        CameraUpdate cameraUpdate = lastPhysicsUpdate.cameraUpdate;
+        
+        // Создаем view матрицу из данных камеры
+        Matrix4f viewMatrix = createViewMatrix(cameraUpdate);
+        Matrix4f projectionMatrix = lastPhysicsUpdate.projectionUpdate.projectionMatrix;
+        
+        // Комбинируем view и projection матрицы
+        Matrix4f viewProjMatrix = projectionMatrix.multiply(viewMatrix);
+        
+        // Рендерим каждую модель
+        int activeIndex = scene.getActiveModelIndex();
+        List<Model> models = scene.getModels();
+        
+        for (int i = 0; i < models.size(); i++) {
+            Model model = models.get(i);
+            boolean isActive = (i == activeIndex);
+            boolean isSelected = scene.isModelSelected(i);
+
+            // Разные цвета для активных и неактивных моделей
+            if (isActive) {
+                g2d.setColor(isSelected ? new Color(0, 150, 255) : new Color(0, 100, 200));
+            } else if (isSelected) {
+                g2d.setColor(new Color(150, 150, 150));
+            } else {
+                g2d.setColor(new Color(100, 100, 100));
+            }
+
+            boolean visible = i < lastPhysicsUpdate.visibilityFlags.length ? 
+                             lastPhysicsUpdate.visibilityFlags[i] : true;
+            drawModel3D(g2d, model, viewProjMatrix, width, height, visible);
+        }
+    }
+    
+    private Matrix4f createViewMatrix(CameraUpdate cameraUpdate) {
+        Vector3f f = cameraUpdate.forward;
+        Vector3f r = cameraUpdate.right;
+        Vector3f u = cameraUpdate.up;
+        Vector3f pos = cameraUpdate.position;
+        
+        Matrix4f view = new Matrix4f();
+        view.set(0, 0, r.x); view.set(0, 1, r.y); view.set(0, 2, r.z);
+        view.set(1, 0, u.x); view.set(1, 1, u.y); view.set(1, 2, u.z);
+        view.set(2, 0, -f.x); view.set(2, 1, -f.y); view.set(2, 2, -f.z);
+        
+        view.set(0, 3, -r.dot(pos));
+        view.set(1, 3, -u.dot(pos));
+        view.set(2, 3, f.dot(pos));
+        
+        return view;
+    }
+    
+    private void drawModel3D(Graphics2D g2d, Model model, Matrix4f viewProjMatrix, 
+                             int width, int height, boolean visible) {
+        if (!visible) return;
+        
+        List<Vertex> vertices = model.getVertices();
+        List<Polygon> polygons = model.getPolygons();
+        
+        // Преобразуем вершины в экранные координаты
+        List<ScreenPoint> screenPoints = new ArrayList<>();
+        for (Vertex vertex : vertices) {
+            Vector4f worldPos = new Vector4f(
+                (float)vertex.getX(),
+                (float)vertex.getY(),
+                (float)vertex.getZ(),
+                1.0f
+            );
+            
+            Vector4f clipPos = viewProjMatrix.multiply(worldPos);
+            
+            // Проверяем, находится ли точка в видимой области перед perspective divide
+            if (Math.abs(clipPos.w) < 0.0001f) {
+                // Точка слишком близко к камере или на бесконечности
+                continue;
+            }
+            
+            Vector4f ndcPos = clipPos.perspectiveDivide();
+            
+            // Проверяем, находится ли точка в видимой области NDC ([-1, 1] для x, y, z)
+            // Но рисуем даже если немного выходит за границы для лучшей видимости
+            boolean inView = (ndcPos.x >= -2.0f && ndcPos.x <= 2.0f && 
+                             ndcPos.y >= -2.0f && ndcPos.y <= 2.0f &&
+                             ndcPos.z >= -2.0f && ndcPos.z <= 2.0f);
+            
+            // Преобразуем NDC в экранные координаты
+            int screenX = (int)((ndcPos.x + 1.0f) * 0.5f * width);
+            int screenY = (int)((1.0f - ndcPos.y) * 0.5f * height);
+            
+            screenPoints.add(new ScreenPoint(screenX, screenY, ndcPos.z, inView));
+        }
+        
+        // Рисуем полигоны
+        g2d.setStroke(new BasicStroke(1.0f));
+        for (Polygon polygon : polygons) {
+            List<Integer> indices = polygon.getVertexIndices();
+            if (indices.size() < 2) continue;
+            
+            int[] xPoints = new int[indices.size()];
+            int[] yPoints = new int[indices.size()];
+            boolean allVisible = true;
+            
+            for (int i = 0; i < indices.size(); i++) {
+                int idx = indices.get(i);
+                if (idx < 0 || idx >= screenPoints.size()) {
+                    allVisible = false;
+                    break;
+                }
+                ScreenPoint sp = screenPoints.get(idx);
+                xPoints[i] = sp.x;
+                yPoints[i] = sp.y;
+            }
+            
+            // Рисуем полигон, если есть хотя бы 2 точки
+            if (allVisible && xPoints.length >= 2) {
+                // Проверяем, есть ли хотя бы одна точка в видимой области
+                boolean hasVisiblePoint = false;
+                for (int i = 0; i < indices.size(); i++) {
+                    int idx = indices.get(i);
+                    if (idx >= 0 && idx < screenPoints.size()) {
+                        ScreenPoint sp = screenPoints.get(idx);
+                        if (sp.inView || (sp.x >= -width && sp.x <= width * 2 && 
+                                         sp.y >= -height && sp.y <= height * 2)) {
+                            hasVisiblePoint = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (hasVisiblePoint) {
+                    g2d.drawPolyline(xPoints, yPoints, xPoints.length);
+                    // Замыкаем полигон
+                    if (xPoints.length > 2) {
+                        g2d.drawLine(xPoints[xPoints.length - 1], yPoints[yPoints.length - 1],
+                                   xPoints[0], yPoints[0]);
+                    }
+                }
+            }
+        }
+        
+        // Рисуем вершины точками (только видимые)
+        g2d.setColor(Color.RED);
+        g2d.setStroke(new BasicStroke(2.0f));
+        for (ScreenPoint sp : screenPoints) {
+            if (sp.inView && sp.x >= -10 && sp.x <= width + 10 && 
+                sp.y >= -10 && sp.y <= height + 10) {
+                g2d.fillOval(sp.x - 2, sp.y - 2, 4, 4);
+            }
+        }
+    }
+    
+    private static class ScreenPoint {
+        int x, y;
+        float z;
+        boolean inView;
+        ScreenPoint(int x, int y, float z, boolean inView) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.inView = inView;
+        }
+    }
+    
+    private void drawSimple(Graphics2D g2d, int width, int height) {
+        // Простой рендеринг без физики (fallback)
+        List<Model> models = scene.getModels();
+        
+        // Находим границы всех моделей для центрирования
+        double minX = Double.MAX_VALUE, maxX = Double.MIN_VALUE;
+        double minY = Double.MAX_VALUE, maxY = Double.MIN_VALUE;
+        double minZ = Double.MAX_VALUE, maxZ = Double.MIN_VALUE;
+
+        for (Model model : models) {
+            for (Vertex vertex : model.getVertices()) {
+                minX = Math.min(minX, vertex.getX());
+                maxX = Math.max(maxX, vertex.getX());
+                minY = Math.min(minY, vertex.getY());
+                maxY = Math.max(maxY, vertex.getY());
+                minZ = Math.min(minZ, vertex.getZ());
+                maxZ = Math.max(maxZ, vertex.getZ());
+            }
+        }
+
+        double centerX = (minX + maxX) / 2;
+        double centerY = (minY + maxY) / 2;
+        double centerZ = (minZ + maxZ) / 2;
+
+        double rangeX = maxX - minX;
+        double rangeY = maxY - minY;
+        double rangeZ = maxZ - minZ;
+        double maxRange = Math.max(Math.max(rangeX, rangeY), rangeZ);
+
+        // Автоматический масштаб для вписывания в экран
+        // Всегда пересчитываем масштаб для правильного отображения
+        if (maxRange > 0) {
+            double scaleX = (width * 0.8) / Math.max(rangeX, 0.001);
+            double scaleY = (height * 0.8) / Math.max(rangeY, 0.001);
+            double newScale = Math.min(scaleX, scaleY);
+            
+            // Если масштаб не был установлен или модель изменилась, обновляем его
+            if (scale == 1.0 || Math.abs(scale - newScale) > 0.1) {
+                scale = newScale;
+            }
+        }
+
+        // Рендерим каждую модель
+        int activeIndex = scene.getActiveModelIndex();
+        for (int i = 0; i < models.size(); i++) {
+            Model model = models.get(i);
+            boolean isActive = (i == activeIndex);
+            boolean isSelected = scene.isModelSelected(i);
+
+            // Разные цвета для активных и неактивных моделей
+            if (isActive) {
+                g2d.setColor(isSelected ? new Color(0, 150, 255) : new Color(0, 100, 200));
+            } else if (isSelected) {
+                g2d.setColor(new Color(150, 150, 150));
+            } else {
+                g2d.setColor(new Color(100, 100, 100));
+            }
+
+            drawModel(g2d, model, centerX, centerY, centerZ, width, height);
+        }
+    }
+    
+    private void drawInfo(Graphics2D g2d, int width, int height) {
+        List<Model> models = scene.getModels();
+        int activeIndex = scene.getActiveModelIndex();
+        
+        g2d.setColor(Color.BLACK);
+        g2d.setFont(new Font("Arial", Font.PLAIN, 12));
+        int yPos = 20;
+        
+        // Информация о моделях
+        for (int i = 0; i < models.size(); i++) {
+            Model model = models.get(i);
+            String info = model.getName() + ": " + model.getVertexCount() + 
+                         " vertices, " + model.getPolygonCount() + " polygons";
+            if (i == activeIndex) {
+                info = "► " + info;
+            }
+            g2d.drawString(info, 10, yPos);
+            yPos += 20;
+        }
+        
+        // Информация о физике
+        if (physicsInitialized && lastPhysicsUpdate != null) {
+            yPos += 10;
+            g2d.setColor(new Color(100, 100, 100));
+            CameraUpdate cam = lastPhysicsUpdate.cameraUpdate;
+            g2d.drawString(String.format("Camera: (%.2f, %.2f, %.2f)", 
+                cam.position.x, cam.position.y, cam.position.z), 10, yPos);
+            yPos += 15;
+            g2d.drawString(String.format("Target: (%.2f, %.2f, %.2f)", 
+                cam.target.x, cam.target.y, cam.target.z), 10, yPos);
+            yPos += 15;
+            g2d.drawString(String.format("Near: %.3f, Far: %.3f", 
+                cam.near, cam.far), 10, yPos);
+            yPos += 15;
+            g2d.drawString(String.format("Physics: %s", 
+                lastPhysicsUpdate.projectionUpdate.projectionType), 10, yPos);
+            yPos += 15;
+            g2d.drawString("Controls: Mouse drag = rotate, Wheel = zoom, WASD = move, QE = up/down", 10, yPos);
+        } else if (!models.isEmpty()) {
+            yPos += 10;
+            g2d.setColor(new Color(100, 100, 100));
+            g2d.drawString("Using simple rendering (physics disabled)", 10, yPos);
+            yPos += 15;
+            g2d.drawString(String.format("Scale: %.2f, Offset: (%.0f, %.0f)", scale, offsetX, offsetY), 10, yPos);
+        }
+    }
+
+    private void drawModel(Graphics2D g2d, Model model, 
+                          double centerX, double centerY, double centerZ,
+                          int width, int height) {
+
+        List<Vertex> vertices = model.getVertices();
+        List<Polygon> polygons = model.getPolygons();
+        
+        if (vertices.isEmpty() || polygons.isEmpty()) {
+            return; // Нет данных для отображения
+        }
+
+        // Рисуем полигоны
+        g2d.setStroke(new BasicStroke(1.5f)); // Немного толще для лучшей видимости
+        int polygonsDrawn = 0;
+        for (Polygon polygon : polygons) {
+            List<Integer> indices = polygon.getVertexIndices();
+            if (indices.size() < 2) continue;
+
+            int[] xPoints = new int[indices.size()];
+            int[] yPoints = new int[indices.size()];
+            boolean hasValidPoints = false;
+
+            for (int i = 0; i < indices.size(); i++) {
+                int idx = indices.get(i);
+                if (idx < 0 || idx >= vertices.size()) {
+                    continue;
+                }
+                
+                Vertex v = vertices.get(idx);
+                
+                // Центрируем и масштабируем
+                double x = (v.getX() - centerX) * scale;
+                double y = (v.getY() - centerY) * scale;
+
+                double zOffset = (v.getZ() - centerZ) * scale * 0.3;
+                x += zOffset * 0.5;
+                y += zOffset * 0.5;
+
+                // Переводим в координаты экрана
+                int screenX = (int) (width / 2 + x + offsetX);
+                int screenY = (int) (height / 2 - y + offsetY);
+                
+                xPoints[i] = screenX;
+                yPoints[i] = screenY;
+                
+                // Проверяем, что точка в разумных пределах экрана
+                if (screenX >= -width && screenX <= width * 2 && 
+                    screenY >= -height && screenY <= height * 2) {
+                    hasValidPoints = true;
+                }
+            }
+
+            // Рисуем контур полигона, если есть валидные точки
+            if (hasValidPoints && xPoints.length >= 2) {
+                g2d.drawPolyline(xPoints, yPoints, xPoints.length);
+                // Замыкаем полигон, если точек > 2
+                if (xPoints.length > 2) {
+                    g2d.drawLine(xPoints[xPoints.length - 1], yPoints[yPoints.length - 1],
+                               xPoints[0], yPoints[0]);
+                }
+                polygonsDrawn++;
+            }
+        }
+        
+        // Отладочная информация
+        if (polygonsDrawn == 0 && !polygons.isEmpty()) {
+            System.out.println("Warning: No polygons drawn. Vertices: " + vertices.size() + 
+                             ", Polygons: " + polygons.size() + 
+                             ", Scale: " + scale + 
+                             ", Center: (" + centerX + ", " + centerY + ", " + centerZ + ")");
+        }
+
+        // Рисуем вершины точками (более заметными)
+        g2d.setColor(Color.RED);
+        g2d.setStroke(new BasicStroke(2.0f));
+        int verticesDrawn = 0;
+        for (Vertex vertex : vertices) {
+            double x = (vertex.getX() - centerX) * scale;
+            double y = (vertex.getY() - centerY) * scale;
+            double zOffset = (vertex.getZ() - centerZ) * scale * 0.3;
+            x += zOffset * 0.5;
+            y += zOffset * 0.5;
+
+            int screenX = (int) (width / 2 + x + offsetX);
+            int screenY = (int) (height / 2 - y + offsetY);
+            
+            // Рисуем только если точка в видимой области
+            if (screenX >= -10 && screenX <= width + 10 && 
+                screenY >= -10 && screenY <= height + 10) {
+                g2d.fillOval(screenX - 3, screenY - 3, 6, 6); // Немного больше
+                verticesDrawn++;
+            }
+        }
+        
+        // Отладочная информация
+        if (verticesDrawn == 0 && !vertices.isEmpty()) {
+            System.out.println("Warning: No vertices drawn. Total vertices: " + vertices.size());
+        }
+    }
+
+    public void resetView() {
+        scale = 1.0;
+        offsetX = 0;
+        offsetY = 0;
+        cameraDistance = 10.0f;
+        cameraRotationX = 0;
+        cameraRotationY = 0;
+        physicsInitialized = false;
+        repaint();
+    }
+    
+    public void onSceneChanged() {
+        // Переинициализируем физику при изменении сцены
+        physicsInitialized = false;
+        lastPhysicsUpdate = null;
+        
+        // Сбрасываем камеру и масштаб к начальному состоянию
+        scale = 1.0;
+        offsetX = 0;
+        offsetY = 0;
+        cameraDistance = 10.0f;
+        cameraRotationX = 0;
+        cameraRotationY = 0;
+        
+        if (!scene.getModels().isEmpty()) {
+            // Вычисляем новый центр сцены
+            List<Model> models = scene.getModels();
+            Vector3f sceneCenter = new Vector3f(0, 0, 0);
+            int totalVertices = 0;
+            
+            for (Model model : models) {
+                Vector3f center = calculateModelCenter(model);
+                int vertexCount = model.getVertexCount();
+                if (vertexCount > 0) {
+                    sceneCenter = sceneCenter.add(center.mul(vertexCount));
+                    totalVertices += vertexCount;
+                }
+            }
+            
+            if (totalVertices > 0) {
+                cameraTarget = sceneCenter.mul(1.0f / totalVertices);
+            } else {
+                cameraTarget = new Vector3f(0, 0, 0);
+            }
+            
+            updateDesiredCameraPosition();
+            
+            // Инициализируем физику сразу
+            initializePhysics();
+            
+            // Принудительно обновляем физику один раз для первого кадра
+            if (physicsInitialized) {
+                try {
+                    List<Model> modelsList = scene.getModels();
+                    if (!modelsList.isEmpty()) {
+                        List<Vector3f> objectPositions = new ArrayList<>();
+                        List<Float> objectRadii = new ArrayList<>();
+                        
+                        for (Model model : modelsList) {
+                            Vector3f center = calculateModelCenter(model);
+                            objectPositions.add(center);
+                            float radius = calculateModelRadius(model, center);
+                            objectRadii.add(radius);
+                        }
+                        
+                        Vector3f[] positionsArray = objectPositions.toArray(new Vector3f[0]);
+                        float[] radiiArray = new float[objectRadii.size()];
+                        for (int i = 0; i < objectRadii.size(); i++) {
+                            radiiArray[i] = objectRadii.get(i);
+                        }
+                        
+                        lastPhysicsUpdate = physicsEngine.update(0.016f, desiredCameraPos, positionsArray, radiiArray);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error initializing physics update: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }
+        } else {
+            cameraTarget = new Vector3f(0, 0, 0);
+            desiredCameraPos = new Vector3f(0, 0, 10);
+        }
+        
+        repaint();
+    }
+}

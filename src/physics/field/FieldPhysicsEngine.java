@@ -119,6 +119,12 @@ public class FieldPhysicsEngine {
         cameraPhysics.setConfig(newConfig);
     }
     
+    public void setCameraTarget(Vector3f newTarget) {
+        if (isInitialized) {
+            cameraPhysics.setTarget(newTarget);
+        }
+    }
+    
     public static class PhysicsUpdateResult {
         public final CameraUpdate cameraUpdate;
         public final PerspectiveManager.ProjectionUpdate projectionUpdate;
