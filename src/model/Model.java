@@ -10,6 +10,34 @@ public class Model {
     private String name;
     private List<Vertex> vertices;
     private List<Polygon> polygons;
+    // Текстура модели
+    private java.awt.image.BufferedImage texture;
+    // Нормали для вершин/глобально
+    private List<double[]> normals = new ArrayList<>(); // [nx, ny, nz]
+
+    public void setTexture(java.awt.image.BufferedImage texture) {
+        this.texture = texture;
+    }
+
+    public java.awt.image.BufferedImage getTexture() {
+        return texture;
+    }
+
+    public void addNormal(double nx, double ny, double nz) {
+        normals.add(new double[]{nx, ny, nz});
+    }
+
+    public List<double[]> getNormals() {
+        return new ArrayList<>(normals);
+    }
+
+    public double[] getNormal(int index) {
+        return normals.get(index);
+    }
+
+    public int getNormalCount() {
+        return normals.size();
+    }
 
     public Model(String name) {
         this.name = name;

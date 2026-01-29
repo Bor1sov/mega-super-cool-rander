@@ -213,6 +213,39 @@ public class ViewerWindow extends JFrame {
             File selectedFile = fileChooser.getSelectedFile();
             try {
                 Model model = ObjReader.read(selectedFile.getAbsolutePath());
+
+                // --- Загрузка текстуры ---
+                int textureChoice = JOptionPane.showConfirmDialog(this, "Load texture image (PNG/JPG)?", "Texture", JOptionPane.YES_NO_OPTION);
+                if (textureChoice == JOptionPane.YES_OPTION) {
+                    JFileChooser texChooser = new JFileChooser();
+                    texChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
+                        @Override
+                        public boolean accept(File f) {
+                            String name = f.getName().toLowerCase();
+                            return f.isDirectory() || name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg");
+                        }
+                        @Override
+                        public String getDescription() {
+                            return "Image Files (*.png, *.jpg, *.jpeg)";
+                        }
+                    });
+                    int texResult = texChooser.showOpenDialog(this);
+                    if (texResult == JFileChooser.APPROVE_OPTION) {
+                        File texFile = texChooser.getSelectedFile();
+                        try {
+                            javax.imageio.ImageIO.setUseCache(false);
+                            java.awt.image.BufferedImage texture = javax.imageio.ImageIO.read(texFile);
+                            if (texture != null) {
+                                model.setTexture(texture);
+                            } else {
+                                showErrorDialog("Texture load error", "Could not load image: " + texFile.getName());
+                            }
+                        } catch (Exception texEx) {
+                            showErrorDialog("Texture load error", texEx.getMessage());
+                        }
+                    }
+                }
+
                 scene.addModel(model);
                 updateModelList();
                 scene.setActiveModel(scene.getModelCount() - 1);
@@ -220,7 +253,7 @@ public class ViewerWindow extends JFrame {
                 updateVertexAndPolygonSpinners();
                 modelRenderer.onSceneChanged();
                 modelRenderer.repaint();
-                
+
                 JOptionPane.showMessageDialog(this,
                     "Model loaded successfully!\n" +
                     "Name: " + model.getName() + "\n" +
@@ -230,7 +263,7 @@ public class ViewerWindow extends JFrame {
                     JOptionPane.INFORMATION_MESSAGE);
             } catch (ObjReaderException e) {
                 showErrorDialog("Error loading model", e.getMessage());
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 showErrorDialog("Error loading model", 
                     "An unexpected error occurred:\n" + e.getMessage());
             }

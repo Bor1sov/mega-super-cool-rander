@@ -20,6 +20,113 @@ import java.util.ArrayList;
  * Компонент для визуализации 3D моделей с физическим движком
  */
 public class ModelRenderer extends JPanel {
+
+                    // Растеризация треугольника с освещением и текстурой
+                    private void rasterizeTriangle(Graphics2D g2d,
+                                                   double[] v0, double[] v1, double[] v2,
+                                                   double[] n0, double[] n1, double[] n2,
+                                                   double[] t0, double[] t1, double[] t2,
+                                                   Color baseColor,
+                                                   java.awt.image.BufferedImage texture) {
+                        // Ограничивающий прямоугольник
+                        int minX = (int)Math.max(0, Math.min(Math.min(v0[0], v1[0]), v2[0]));
+                        int maxX = (int)Math.max(0, Math.max(Math.max(v0[0], v1[0]), v2[0]));
+                        int minY = (int)Math.max(0, Math.min(Math.min(v0[1], v1[1]), v2[1]));
+                        int maxY = (int)Math.max(0, Math.max(Math.max(v0[1], v1[1]), v2[1]));
+                        for (int y = minY; y <= maxY; y++) {
+                            for (int x = minX; x <= maxX; x++) {
+                                double[] bary = barycentric(v0, v1, v2, x + 0.5, y + 0.5);
+                                if (bary[0] < 0 || bary[1] < 0 || bary[2] < 0) continue;
+                                // Интерполяция нормали
+                                double nx = n0[0] * bary[0] + n1[0] * bary[1] + n2[0] * bary[2];
+                                double ny = n0[1] * bary[0] + n1[1] * bary[1] + n2[1] * bary[2];
+                                double nz = n0[2] * bary[0] + n1[2] * bary[1] + n2[2] * bary[2];
+                                double norm = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                                if (norm > 1e-8) { nx /= norm; ny /= norm; nz /= norm; }
+                                // Интерполяция UV
+                                double u = 0, v = 0;
+                                if (t0 != null && t1 != null && t2 != null) {
+                                    u = t0[0] * bary[0] + t1[0] * bary[1] + t2[0] * bary[2];
+                                    v = t0[1] * bary[0] + t1[1] * bary[1] + t2[1] * bary[2];
+                                }
+                                // Освещение (Lambert + Phong)
+                                // Для viewDir используем направление на "камеру" (0,0,1) в экранных координатах
+                                double light = enableLighting ? computeLighting(nx, ny, nz, 0, 0, 1) : 1.0;
+                                Color color = baseColor;
+                                if (enableTexture && texture != null && t0 != null) {
+                                    color = sampleTexture(texture, u, v);
+                                }
+                                int r = (int)Math.round(color.getRed() * light);
+                                int g = (int)Math.round(color.getGreen() * light);
+                                int b = (int)Math.round(color.getBlue() * light);
+                                int a = color.getAlpha();
+                                g2d.setColor(new Color(
+                                    Math.max(0, Math.min(255, r)),
+                                    Math.max(0, Math.min(255, g)),
+                                    Math.max(0, Math.min(255, b)),
+                                    a));
+                                g2d.fillRect(x, y, 1, 1);
+                            }
+                        }
+                    }
+
+                    // Барицентрические координаты
+                    private static double[] barycentric(double[] v0, double[] v1, double[] v2, double px, double py) {
+                        double x0 = v0[0], y0 = v0[1];
+                        double x1 = v1[0], y1 = v1[1];
+                        double x2 = v2[0], y2 = v2[1];
+                        double denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+                        if (Math.abs(denom) < 1e-8) return new double[]{-1, -1, -1};
+                        double w0 = ((y1 - y2) * (px - x2) + (x2 - x1) * (py - y2)) / denom;
+                        double w1 = ((y2 - y0) * (px - x2) + (x0 - x2) * (py - y2)) / denom;
+                        double w2 = 1.0 - w0 - w1;
+                        return new double[]{w0, w1, w2};
+                    }
+                // Phong (Lambert + ambient + specular) shading
+                private double computeLighting(double nx, double ny, double nz, double vx, double vy, double vz) {
+                    double[] lightDir = normalize(lightDirX, lightDirY, lightDirZ);
+                    double[] viewDir = normalize(vx, vy, vz);
+                    // Diffuse
+                    double dot = nx * lightDir[0] + ny * lightDir[1] + nz * lightDir[2];
+                    double diffuse = Math.max(0, dot);
+                    // Specular
+                    double[] reflectDir = new double[] {
+                        2 * dot * nx - lightDir[0],
+                        2 * dot * ny - lightDir[1],
+                        2 * dot * nz - lightDir[2]
+                    };
+                    double spec = Math.pow(Math.max(0, reflectDir[0] * viewDir[0] + reflectDir[1] * viewDir[1] + reflectDir[2] * viewDir[2]), shininess);
+                    double result = ambientStrength + (1.0 - ambientStrength) * diffuse * lightIntensity + specularStrength * spec;
+                    return Math.min(1.0, Math.max(0.0, result));
+                }
+
+                // Sample texture color by UV (u,v in [0,1])
+                private Color sampleTexture(java.awt.image.BufferedImage texture, double u, double v) {
+                    if (texture == null) return Color.LIGHT_GRAY;
+                    int w = texture.getWidth();
+                    int h = texture.getHeight();
+                    int x = (int)(Math.abs(u % 1.0) * (w - 1));
+                    int y = (int)((1.0 - Math.abs(v % 1.0)) * (h - 1));
+                    x = Math.max(0, Math.min(w - 1, x));
+                    y = Math.max(0, Math.min(h - 1, y));
+                    int rgb = texture.getRGB(x, y);
+                    return new Color(rgb, true);
+                }
+            // Вспомогательный метод для нормализации вектора
+            private static double[] normalize(double x, double y, double z) {
+                double len = Math.sqrt(x * x + y * y + z * z);
+                if (len < 1e-8) return new double[]{0, 0, 1};
+                return new double[]{x / len, y / len, z / len};
+            }
+        // --- Lighting and Texture parameters ---
+        private boolean enableLighting = true;
+        private boolean enableTexture = true;
+        private double ambientStrength = 0.2;
+        private double lightIntensity = 1.2;
+        private double specularStrength = 0.5;
+        private double shininess = 32.0;
+        // Light direction (normalized)
+        private double lightDirX = -0.5, lightDirY = -0.5, lightDirZ = 1.0;
     private Scene scene;
     private double scale = 1.0;
     private double offsetX = 0;
@@ -722,63 +829,73 @@ public class ModelRenderer extends JPanel {
             return; // Нет данных для отображения
         }
 
-        // Рисуем полигоны
-        g2d.setStroke(new BasicStroke(1.5f)); // Немного толще для лучшей видимости
+        // Рисуем полигоны (треугольники с освещением и текстурой)
+        g2d.setStroke(new BasicStroke(1.5f));
         int polygonsDrawn = 0;
+        java.awt.image.BufferedImage texture = model.getTexture();
         for (Polygon polygon : polygons) {
             List<Integer> indices = polygon.getVertexIndices();
-            if (indices.size() < 2) continue;
-
-            int[] xPoints = new int[indices.size()];
-            int[] yPoints = new int[indices.size()];
-            boolean hasValidPoints = false;
-
-            for (int i = 0; i < indices.size(); i++) {
-                int idx = indices.get(i);
-                if (idx < 0 || idx >= vertices.size()) {
-                    continue;
+            if (indices.size() == 3) {
+                // Только заливка/текстура для треугольников
+                double[][] v = new double[3][];
+                double[][] n = new double[3][];
+                double[][] t = new double[3][];
+                for (int i = 0; i < 3; i++) {
+                    int idx = indices.get(i);
+                    if (idx < 0 || idx >= vertices.size()) continue;
+                    Vertex vert = vertices.get(idx);
+                    double[] transformed = transformVertexWithCamera(
+                        vert.getX(), vert.getY(), vert.getZ(),
+                        centerX, centerY, centerZ
+                    );
+                    double x = transformed[0] * scale;
+                    double y = transformed[1] * scale;
+                    double z = transformed[2];
+                    double perspective = cameraDistance / (cameraDistance + z);
+                    x *= perspective;
+                    y *= perspective;
+                    int screenX = (int) (width / 2 + x + offsetX);
+                    int screenY = (int) (height / 2 - y + offsetY);
+                    v[i] = new double[]{screenX, screenY, z};
+                    n[i] = new double[]{vert.getNx(), vert.getNy(), vert.getNz()};
+                    t[i] = new double[]{vert.getU(), vert.getV()};
                 }
-                
-                Vertex v = vertices.get(idx);
-                
-                // Применяем трансформации камеры
-                double[] transformed = transformVertexWithCamera(
-                    v.getX(), v.getY(), v.getZ(),
-                    centerX, centerY, centerZ
-                );
-                
-                double x = transformed[0] * scale;
-                double y = transformed[1] * scale;
-                double z = transformed[2];
-
-                // Простая перспективная проекция
-                double perspective = cameraDistance / (cameraDistance + z);
-                x *= perspective;
-                y *= perspective;
-
-                // Переводим в координаты экрана
-                int screenX = (int) (width / 2 + x + offsetX);
-                int screenY = (int) (height / 2 - y + offsetY);
-                
-                xPoints[i] = screenX;
-                yPoints[i] = screenY;
-                
-                // Проверяем, что точка в разумных пределах экрана
-                if (screenX >= -width && screenX <= width * 2 && 
-                    screenY >= -height && screenY <= height * 2) {
-                    hasValidPoints = true;
-                }
-            }
-
-            // Рисуем контур полигона, если есть валидные точки
-            if (hasValidPoints && xPoints.length >= 2) {
-                g2d.drawPolyline(xPoints, yPoints, xPoints.length);
-                // Замыкаем полигон, если точек > 2
-                if (xPoints.length > 2) {
-                    g2d.drawLine(xPoints[xPoints.length - 1], yPoints[yPoints.length - 1],
-                               xPoints[0], yPoints[0]);
-                }
+                rasterizeTriangle(g2d, v[0], v[1], v[2], n[0], n[1], n[2], t[0], t[1], t[2], g2d.getColor(), texture);
                 polygonsDrawn++;
+            } else if (indices.size() >= 2) {
+                // Wireframe только для не-треугольников
+                int[] xPoints = new int[indices.size()];
+                int[] yPoints = new int[indices.size()];
+                boolean hasValidPoints = false;
+                for (int i = 0; i < indices.size(); i++) {
+                    int idx = indices.get(i);
+                    if (idx < 0 || idx >= vertices.size()) continue;
+                    Vertex vtx = vertices.get(idx);
+                    double[] transformed = transformVertexWithCamera(
+                        vtx.getX(), vtx.getY(), vtx.getZ(),
+                        centerX, centerY, centerZ
+                    );
+                    double x = transformed[0] * scale;
+                    double y = transformed[1] * scale;
+                    double z = transformed[2];
+                    double perspective = cameraDistance / (cameraDistance + z);
+                    x *= perspective;
+                    y *= perspective;
+                    int screenX = (int) (width / 2 + x + offsetX);
+                    int screenY = (int) (height / 2 - y + offsetY);
+                    xPoints[i] = screenX;
+                    yPoints[i] = screenY;
+                    if (screenX >= -width && screenX <= width * 2 && screenY >= -height && screenY <= height * 2) {
+                        hasValidPoints = true;
+                    }
+                }
+                if (hasValidPoints && xPoints.length >= 2) {
+                    g2d.drawPolyline(xPoints, yPoints, xPoints.length);
+                    if (xPoints.length > 2) {
+                        g2d.drawLine(xPoints[xPoints.length - 1], yPoints[yPoints.length - 1], xPoints[0], yPoints[0]);
+                    }
+                    polygonsDrawn++;
+                }
             }
         }
         

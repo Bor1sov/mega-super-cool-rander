@@ -8,17 +8,34 @@ import java.util.List;
  */
 public class Polygon {
     private List<Integer> vertexIndices;
+    // Индексы нормалей для вершин (если нужны для Gouraud/Phong shading)
+    private List<Integer> normalIndices;
 
     public Polygon() {
         this.vertexIndices = new ArrayList<>();
+        this.normalIndices = new ArrayList<>();
     }
 
     public Polygon(List<Integer> vertexIndices) {
         this.vertexIndices = new ArrayList<>(vertexIndices);
+        this.normalIndices = new ArrayList<>();
+    }
+
+    public Polygon(List<Integer> vertexIndices, List<Integer> normalIndices) {
+        this.vertexIndices = new ArrayList<>(vertexIndices);
+        this.normalIndices = new ArrayList<>(normalIndices);
     }
 
     public List<Integer> getVertexIndices() {
         return new ArrayList<>(vertexIndices);
+    }
+
+    public List<Integer> getNormalIndices() {
+        return new ArrayList<>(normalIndices);
+    }
+
+    public void addNormalIndex(int index) {
+        normalIndices.add(index);
     }
 
     public void addVertexIndex(int index) {
@@ -27,6 +44,10 @@ public class Polygon {
 
     public int getVertexCount() {
         return vertexIndices.size();
+    }
+
+    public int getNormalCount() {
+        return normalIndices.size();
     }
 
     public boolean containsVertex(int vertexIndex) {

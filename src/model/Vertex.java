@@ -7,11 +7,70 @@ public class Vertex {
     private double x;
     private double y;
     private double z;
+    // UV-координаты для текстурирования
+    private double u = 0.0;
+    private double v = 0.0;
+    // Нормали для освещения
+    private double nx = 0.0;
+    private double ny = 0.0;
+    private double nz = 1.0;
 
     public Vertex(double x, double y, double z) {
         this.x = x;
         this.y = y;
         this.z = z;
+    }
+
+    public Vertex(double x, double y, double z, double u, double v) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.u = u;
+        this.v = v;
+    }
+
+    public Vertex(double x, double y, double z, double u, double v, double nx, double ny, double nz) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.u = u;
+        this.v = v;
+        this.nx = nx;
+        this.ny = ny;
+        this.nz = nz;
+    }
+    public double getU() {
+        return u;
+    }
+
+    public double getV() {
+        return v;
+    }
+
+    public void setU(double u) {
+        this.u = u;
+    }
+
+    public void setV(double v) {
+        this.v = v;
+    }
+
+    public double getNx() {
+        return nx;
+    }
+
+    public double getNy() {
+        return ny;
+    }
+
+    public double getNz() {
+        return nz;
+    }
+
+    public void setNormal(double nx, double ny, double nz) {
+        this.nx = nx;
+        this.ny = ny;
+        this.nz = nz;
     }
 
     public double getX() {
@@ -37,10 +96,24 @@ public class Vertex {
     public void setZ(double z) {
         this.z = z;
     }
+    
+    // Вычисление длины нормали
+    public double normalLength() {
+        return Math.sqrt(nx * nx + ny * ny + nz * nz);
+    }
+    // Нормализация нормали
+    public void normalizeNormal() {
+        double len = normalLength();
+        if (len > 1e-8) {
+            nx /= len;
+            ny /= len;
+            nz /= len;
+        }
+    }
 
     @Override
     public String toString() {
-        return String.format("v %.6f %.6f %.6f", x, y, z);
+        return String.format("v %.6f %.6f %.6f vt %.6f %.6f", x, y, z, u, v);
     }
 
     @Override
